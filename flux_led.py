@@ -82,7 +82,7 @@ class utils:
 		# try to convert a string RGB tuple
 		try:
 			val = ast.literal_eval(color)
-			if type(val) is not tuple or len(val) != 3:
+			if type(val) is not tuple or (len(val) != 3 and len(val) != 4):
 				raise Exception
 			return val
 		except:
@@ -445,17 +445,24 @@ class WifiLedBulb():
 		self.ipaddr = ipaddr
 		self.port = port
 		self.__is_on = False
-		
+		self.rgb = True
+		self.rgbw = False
+		self.white_only = False
+		self.temp = False
+		self.ww = 1;
+		self.cw = 2;
 		self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		self.socket.connect((self.ipaddr, self.port))
 		
 		self.__state_str = ""
-		#self.refreshState()
+		self.refreshState()
 
 	def __determineMode(self, ww_level, pattern_code):
 		mode = "unknown"
 		if pattern_code in [ 0x61, 0x62]:
-			if ww_level != 0:
+                        if self.rgbw == True:
+                                mode = "rgbw"
+			elif ww_level != 0:
 				mode = "ww"
 			else:
 				mode = "color"
@@ -465,6 +472,54 @@ class WifiLedBulb():
 			mode = "preset"
 		return mode
 
+        def __determineType(self, devtype):
+                if devtype == 0x01 or devtype == 0x33:
+                        return "rgbmini"
+                elif devtype == 0x02 or devtype == 0x31:
+                        self.rgb = False
+                        return "minidimmable"
+                elif devtype == 0x03:
+                        # TODO - this is more complicated
+                        self.rgb = False
+                        return "minicct"
+                elif devtype == 0x04:
+                        self.rgbw = True
+                        return "rgbwufo"
+                elif devtype == 0x12:
+                        self.rgb = False
+                        return "cctall"
+                elif devtype == 0x13 or devtype == 0x22 or devtype == 0x32:
+                        self.rgb = False
+                        self.temp = True
+                        if devtype == 0x32:
+                                self.ww = 2
+                                self.cw = 1
+                        return "cctbulb"
+                elif devtype == 0x14 or devtype == 0x44 or devtype == 0x54:
+                        return "rgbwbulb"
+                elif devtype == 0x15 or devtype == 0x25 or devtype == 0x35:
+                        self.ww = 4
+                        self.cw = 5
+                        return "rgbcct"
+                elif devtype == 0x31:
+                        self.rgb = False
+                        return "dimmable"
+                elif devtype == 0x42:
+                        self.rgb = False
+                        return "cctceiling"
+                elif devtype == 0x80:
+                        return "fish"
+                elif devtype == 0x81:
+                        return "strip"
+                elif devtype == 0x83:
+                        return "newfish"
+                elif devtype == 0xa0 or devtype == 0xa1:
+                        return "lamp"
+                elif devtype == 0xe0:
+                        return "voicebox"
+                else:
+                        return "unknown"
+
 	def refreshState(self):
 		msg = bytearray([0x81, 0x8a, 0x8b])
 		self.__write(msg)
@@ -473,27 +528,29 @@ class WifiLedBulb():
 		power_state = rx[2]
 		power_str = "Unknown power state"
 
+		self.dev_type = self.__determineType(rx[1])
+
 		if power_state == 0x23:
 			self.__is_on = True
 			power_str = "ON "
 		elif power_state == 0x24:
 			self.__is_on = False
 			power_str = "OFF"
-			
+
 		pattern = rx[3]
-		ww_level = rx[9]
-		mode = self.__determineMode(ww_level, pattern)
+                self.red = rx[6]
+                self.green = rx[7]
+                self.blue = rx[8]
+		self.white = rx[9]
+		mode = self.__determineMode(self.white, pattern)
 		delay = rx[5]
 		speed = utils.delayToSpeed(delay)
 		
 		if mode == "color":
-			red = rx[6]
-			green = rx[7]
-			blue = rx[8]
-			color_str = utils.color_tuple_to_string((red, green, blue))
+			color_str = utils.color_tuple_to_string((self.red, self.green, self.blue))
 			mode_str = "Color: {}".format(color_str)
 		elif mode == "ww":
-			mode_str = "Warm White: {}%".format(utils.byteToPercent(ww_level))
+			mode_str = "Warm White: {}%".format(utils.byteToPercent(self.white))
 		elif mode == "preset":
 			pat = PresetPattern.valtostr(pattern)
 			mode_str = "Pattern: {} (Speed {}%)".format(pat, speed)
@@ -503,7 +560,7 @@ class WifiLedBulb():
 			mode_str = "Unknown mode 0x{:x}".format(pattern)
 		if pattern == 0x62:
 			mode_str += " (tmp)"
-		self.__state_str = "{} [{}]".format(power_str, mode_str)
+		self.__state_str = "{} [{}] Type: {}".format(power_str, mode_str, self.dev_type)
 
 	def __str__(self):
 		return self.__state_str
@@ -573,6 +630,9 @@ class WifiLedBulb():
 		self.__write(msg)
 		
 	def setRgb(self, r,g,b, persist=True):
+                if self.rgb != True:
+                        return
+
 		if persist:
 			msg = bytearray([0x31])
 		else:
@@ -581,9 +641,43 @@ class WifiLedBulb():
 		msg.append(g)
 		msg.append(b)
 		msg.append(0x00)
-		msg.append(0xf0)
+                msg.append(0x00)
 		msg.append(0x0f)
+                print(msg)
 		self.__write(msg)
+
+        def setRgbw(self, r, g, b, w, persist=True):
+                if self.rgbw != True:
+                        return
+
+                print(r, g, b, w)
+                if persist:
+                        msg = bytearray([0x31])
+                else:
+                        msg = bytearray([0x41])
+                msg.append(r)
+                msg.append(g)
+                msg.append(b)
+                msg.append(w)
+                msg.append(0x00)
+                msg.append(0x0f)
+		self.__write(msg)
+
+        def setCct(self, warm, cool, persist=True):
+                if self.temp != True:
+                        return
+                if persist:
+                        msg = bytarray([0x31])
+                else:
+                        msg = bytearray([0x41])
+
+                for i in range(6):
+                        msg.append(0x00)
+
+                msg[self.ww] = warm
+                msg[self.cw] = cool
+                msg.append(0x0f)
+                self.__write(msg)
 
 	def setPresetPattern(self, pattern, speed):
 
@@ -1086,6 +1180,9 @@ def parseArgs():
 	mode_group.add_option("-c", "--color", dest="color", default=None,
 				  help="Set single color mode.  Can be either color name, web hex, or comma-separated RGB triple",
 				  metavar='COLOR')
+	mode_group.add_option("-z", "--rgbw", dest="rgbw", default=None,
+                              help="Set rgbw mode. Must be a comma-separated RGBW triple",
+                              metavar='RGBW')
 	mode_group.add_option("-w", "--warmwhite", dest="ww", default=None,
 				  help="Set warm white mode (LEVEL is percent)",
 				  metavar='LEVEL', type="int")
@@ -1160,6 +1257,7 @@ def parseArgs():
 	mode_count = 0
 	if options.color:  mode_count += 1
 	if options.ww:     mode_count += 1
+        if options.rgbw:   mode_count += 1
 	if options.preset: mode_count += 1
 	if options.custom: mode_count += 1
 	if mode_count > 1:
@@ -1175,7 +1273,12 @@ def parseArgs():
 		options.color = utils.color_object_to_tuple(options.color)
 		if options.color is None:
 			parser.error("bad color specification")
-		
+
+	if options.rgbw:
+		options.rgbw = utils.color_object_to_tuple(options.rgbw)
+		if options.rgbw is None:
+			parser.error("bad color specification")
+
 	if options.preset:
 		if not PresetPattern.valid(options.preset[0]):
 			parser.error("Preset code is not in range")
@@ -1260,7 +1363,9 @@ def main():
 			else:
 				print "[{}]".format(name)	
 			bulb.setRgb(options.color[0],options.color[1],options.color[2], not options.volatile)
-			
+		elif options.rgbw is not None:
+                        print "Setting color RGBW:{}".format(options.rgbw),
+                        bulb.setRgbw(options.rgbw[0], options.rgbw[1],options.rgbw[2], options.rgbw[3], not options.volatile)
 		elif options.custom is not None:
 			bulb.setCustomPattern(options.custom[2], options.custom[1], options.custom[0])
 			print "Setting custom pattern: {}, Speed={}%, {}".format(
